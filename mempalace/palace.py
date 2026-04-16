@@ -147,10 +147,12 @@ def _candidate_entity_words(text: str) -> list:
         from .i18n import get_entity_patterns
 
         patterns = get_entity_patterns(MempalaceConfig().entity_languages)
+        # candidate_patterns are pre-wrapped with boundary + capture group
+        # by get_entity_patterns (#932), compile directly without re-wrapping.
         rxs = []
-        for raw_pat in patterns["candidate_patterns"]:
+        for pat in patterns["candidate_patterns"]:
             try:
-                rxs.append(re.compile(rf"\b({raw_pat})\b"))
+                rxs.append(re.compile(pat))
             except re.error:
                 continue
         _CANDIDATE_RX_CACHE = rxs
