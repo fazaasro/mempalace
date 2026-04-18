@@ -282,6 +282,13 @@ def search(query: str, palace_path: str, wing: str = None, room: str = None, n_r
     print(f"{'=' * 60}\n")
 
     for i, (doc, meta, dist) in enumerate(zip(docs, metas, dists), 1):
+        # ChromaDB may return None for doc/meta when a drawer's HNSW entry
+        # exists but its metadata/document rows haven't been materialized
+        # (partial-flush states, mid-delete, schema upgrade boundaries).
+        # Degrade gracefully rather than crash — the hit still appears with
+        # real distance; storage fields show "?" where content is missing.
+        meta = meta or {}
+        doc = doc or ""
         similarity = round(max(0.0, 1 - dist), 3)
         source = Path(meta.get("source_file", "?")).name
         wing_name = meta.get("wing", "?")
