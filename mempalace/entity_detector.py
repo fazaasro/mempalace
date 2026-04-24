@@ -144,6 +144,13 @@ def extract_candidates(text: str, languages=("en",)) -> dict:
     Each language contributes its own character-class pattern (e.g. ASCII
     for English, Latin+diacritics for pt-br, Cyrillic for Russian,
     Devanagari for Hindi). Matches from all languages are unioned.
+
+    **Compound-name preservation** (added 2026-04-24): multi-word matches
+    are extracted first and their character spans masked out of the text
+    before single-word extraction runs. This prevents "Claude Code"
+    appearances from inflating the standalone "Claude" and "Code" counts,
+    which was producing spurious person/project classifications downstream.
+    A standalone "Claude" that appears elsewhere still counts normally.
     """
     langs = _normalize_langs(languages)
     patterns = get_entity_patterns(langs)
@@ -151,29 +158,53 @@ def extract_candidates(text: str, languages=("en",)) -> dict:
 
     counts: defaultdict = defaultdict(int)
 
-    # Single-word candidates — one pre-wrapped pattern per language
-    for wrapped_pat in patterns["candidate_patterns"]:
-        try:
-            rx = re.compile(wrapped_pat)
-        except re.error:
-            continue
-        for word in rx.findall(text):
-            if word.lower() in stopwords:
-                continue
-            if len(word) < 2:
-                continue
-            counts[word] += 1
-
-    # Multi-word candidates — one pre-wrapped pattern per language
+    # Pass A — Multi-word matches, collected with their spans so we can
+    # (for case-based scripts) mask them before the single-word pass.
+    # Compound-preservation masking applies only to phrases where EVERY
+    # word is Latin-title-case (e.g. "Claude Code", "New York"). Non-case
+    # scripts (Devanagari, Cyrillic etc.) are left unmasked — in those
+    # scripts, a multi-word match is often name+verb ("अनीता ने कहा"), not
+    # a compound name, so masking would drop the real single-word candidate.
+    _LATIN_TITLE = re.compile(r"^[A-Z][a-z]+$")
+    masked = list(text)
     for wrapped_pat in patterns["multi_word_patterns"]:
         try:
             rx = re.compile(wrapped_pat)
         except re.error:
             continue
-        for phrase in rx.findall(text):
+        has_group = rx.groups >= 1
+        for m in rx.finditer(text):
+            if has_group:
+                phrase = m.group(1) or ""
+                span_start, span_end = m.start(1), m.end(1)
+            else:
+                phrase = m.group(0)
+                span_start, span_end = m.start(), m.end()
+            if not phrase:
+                continue
             if any(w.lower() in stopwords for w in phrase.split()):
                 continue
             counts[phrase] += 1
+            # Only mask if every word in the compound is Latin title-case.
+            # This preserves the original behavior for non-case scripts.
+            if all(_LATIN_TITLE.match(w) for w in phrase.split()):
+                for i in range(span_start, span_end):
+                    masked[i] = " "
+    masked_text = "".join(masked)
+
+    # Pass B — Single-word extraction runs against the MASKED text, so
+    # tokens already consumed by a multi-word match don't double-count.
+    for wrapped_pat in patterns["candidate_patterns"]:
+        try:
+            rx = re.compile(wrapped_pat)
+        except re.error:
+            continue
+        for word in rx.findall(masked_text):
+            if word.lower() in stopwords:
+                continue
+            if len(word) < 2:
+                continue
+            counts[word] += 1
 
     return {name: count for name, count in counts.items() if count >= 3}
 
