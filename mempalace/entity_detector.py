@@ -446,10 +446,16 @@ def detect_entities(file_paths: list, max_files: int = 10, languages=("en",)) ->
     """
     langs = _normalize_langs(languages)
 
-    # Collect text from files
+    # Collect text from files. Byte-identical duplicates are collapsed
+    # (sha256-hash as we read) so that N copies of the same content don't
+    # inflate token frequencies by N× — a common failure mode on corpora
+    # with retroactive-renumbering or auto-save artifacts. Added 2026-04-24.
+    import hashlib as _hashlib
     all_text = []
     all_lines = []
     files_read = 0
+    seen_hashes: set = set()
+    duplicates_skipped = 0
 
     MAX_BYTES_PER_FILE = 5_000  # first 5KB per file — enough to catch recurring entities
 
@@ -459,6 +465,11 @@ def detect_entities(file_paths: list, max_files: int = 10, languages=("en",)) ->
         try:
             with open(filepath, encoding="utf-8", errors="replace") as f:
                 content = f.read(MAX_BYTES_PER_FILE)
+            digest = _hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+            if digest in seen_hashes:
+                duplicates_skipped += 1
+                continue
+            seen_hashes.add(digest)
             all_text.append(content)
             all_lines.extend(content.splitlines())
             files_read += 1
